@@ -1,0 +1,271 @@
+import sys
+import wave
+import os
+import re
+import struct
+import time
+from collections import Counter
+
+import fitz  # pymupdf
+import numpy as np
+
+
+SAMPLE_RATE = 24000
+DEFAULT_VOICE = "af_heart"
+
+VOICES = [
+    "af_heart", "af_bella", "af_nicole", "af_sarah", "af_sky",
+    "am_adam", "am_michael",
+    "bf_emma", "bf_isabella",
+    "bm_george", "bm_lewis",
+]
+
+
+# --- PDF text extraction (shared with orpheus pipeline) ---
+
+def _detect_body_size(doc):
+    size_chars = Counter()
+    for page in doc:
+        for b in page.get_text("dict")["blocks"]:
+            if b["type"] != 0:
+                continue
+            for line in b["lines"]:
+                for span in line["spans"]:
+                    text = span["text"].strip()
+                    if text:
+                        size_chars[round(span["size"])] += len(text)
+    return size_chars.most_common(1)[0][0] if size_chars else 12
+
+
+def _classify(size, body_size):
+    ratio = size / body_size
+    if ratio > 1.8:
+        return "title"
+    if ratio > 1.3:
+        return "section"
+    if ratio > 1.1:
+        return "deck"
+    if ratio >= 0.85:
+        return "body"
+    return "skip"
+
+
+def _is_artifact(text):
+    return bool(re.match(r'^[A-Za-z]{1,8}$', text))
+
+
+def _unclosed_quote(line):
+    if line[-1:] not in "!?":
+        return False
+    straight = line.count('"')
+    curly_open = line.count('\u201c')
+    curly_close = line.count('\u201d')
+    return straight % 2 == 1 or (curly_open - curly_close) == 1
+
+
+def extract_text_from_pdf(pdf_path, stop_at=None, skip_exact=(), skip_prefixes=()):
+    doc = fitz.open(pdf_path)
+    body_size = _detect_body_size(doc)
+    span_floor = body_size * 0.84
+    print(f"  body_size={body_size}pt  span_floor={span_floor:.1f}pt  pages={len(doc)}")
+
+    output_lines = []
+    prev_role = None
+    title_parts = []
+    done = False
+
+    for page in doc:
+        if done:
+            break
+        for b in page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]:
+            if done:
+                break
+            if b["type"] != 0:
+                continue
+            for line in b["lines"]:
+                spans = [s for s in line["spans"]
+                         if s["text"].strip() and s["size"] >= span_floor]
+                if not spans:
+                    continue
+
+                text = "".join(s["text"] for s in spans).strip()
+                if not text or _is_artifact(text):
+                    continue
+                if text in skip_exact:
+                    continue
+                if skip_prefixes and any(text.startswith(p) for p in skip_prefixes):
+                    continue
+                if stop_at and text.startswith(stop_at):
+                    done = True
+                    break
+
+                dom = max(spans, key=lambda s: s["size"])
+                size = round(dom["size"], 1)
+                role = _classify(size, body_size)
+
+                if role == "skip":
+                    continue
+                if role == "title":
+                    title_parts.append(text)
+                    continue
+
+                if title_parts and role != "title":
+                    output_lines.append(" ".join(title_parts))
+                    title_parts = []
+
+                if role in ("section", "deck"):
+                    output_lines.append("")
+                    output_lines.append(text)
+                    output_lines.append("")
+                elif role == "body":
+                    if re.match(r'^By [A-Z]', text) and len(text) < 60:
+                        output_lines.append("")
+                        output_lines.append(text if text[-1] in ".!?" else text + ".")
+                        output_lines.append("")
+                    elif text.endswith("?") and len(text) < 80 and "\n" not in text:
+                        output_lines.append("")
+                        output_lines.append(text)
+                        output_lines.append("")
+                    elif (output_lines and prev_role == "body" and output_lines[-1]):
+                        last = output_lines[-1]
+                        if last[-1] not in ".!?" or _unclosed_quote(last):
+                            output_lines[-1] = last + " " + text
+                            continue
+                        else:
+                            output_lines.append(text)
+                    else:
+                        output_lines.append(text)
+
+                prev_role = role
+
+    if title_parts:
+        output_lines.append(" ".join(title_parts))
+
+    return re.sub(r'\n{3,}', '\n\n', "\n".join(output_lines)).strip()
+
+
+# --- Validation ---
+
+def _normalise_for_diff(text):
+    text = text.lower()
+    text = re.sub(r'[—–\-]', ' ', text)
+    text = re.sub(r'[^\w\s]', '', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def validate_audio(wav_path, expected_text):
+    import difflib
+    import whisper
+
+    print("\nLoading Whisper model (base.en)...")
+    model = whisper.load_model("base.en")
+    print(f"Transcribing {wav_path}...")
+    result = model.transcribe(wav_path, language="en", fp16=False)
+    transcribed = result["text"]
+
+    exp_words = _normalise_for_diff(expected_text).split()
+    got_words = _normalise_for_diff(transcribed).split()
+    matcher = difflib.SequenceMatcher(None, exp_words, got_words, autojunk=False)
+    opcodes = [(tag, i1, i2, j1, j2) for tag, i1, i2, j1, j2 in matcher.get_opcodes()
+               if tag != 'equal']
+
+    print(f"\n=== DIFF ({len(opcodes)} differences) ===")
+    for tag, i1, i2, j1, j2 in opcodes[:40]:
+        exp_snip = " ".join(exp_words[i1:i2])
+        got_snip = " ".join(got_words[j1:j2])
+        print(f"  [{tag}] expected: {exp_snip!r:50s}  got: {got_snip!r}")
+
+    print(f"\nSimilarity: {matcher.ratio():.1%}")
+    return matcher.ratio()
+
+
+# --- TTS ---
+
+def text_to_wav(text, voice=DEFAULT_VOICE, output_file="output.wav", speed=1.0):
+    from kokoro import KPipeline
+
+    print(f"Loading Kokoro (voice={voice})...")
+    pipe = KPipeline(lang_code="a")
+
+    audio_chunks = []
+    sentence_count = 0
+    t0 = time.monotonic()
+
+    for result in pipe(text, voice=voice, speed=speed, split_pattern=r'\n+'):
+        if result.audio is not None:
+            audio_chunks.append(result.audio)
+            sentence_count += 1
+            if sentence_count % 10 == 0:
+                elapsed = time.monotonic() - t0
+                audio_secs = sum(len(a) for a in audio_chunks) / SAMPLE_RATE
+                print(f"  {sentence_count} sentences | {audio_secs:.0f}s audio | {elapsed:.0f}s elapsed")
+
+    if not audio_chunks:
+        print("WARNING: no audio generated")
+        return
+
+    combined = np.concatenate(audio_chunks)
+    pcm = (combined * 32767).astype(np.int16)
+
+    with wave.open(output_file, "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(SAMPLE_RATE)
+        f.writeframes(pcm.tobytes())
+
+    total_elapsed = time.monotonic() - t0
+    audio_dur = len(combined) / SAMPLE_RATE
+    print(f"Done: {output_file}  ({audio_dur:.1f}s audio in {total_elapsed:.1f}s — {audio_dur/total_elapsed:.1f}x real-time)")
+
+
+def pdf_to_speech(pdf_path, voice=DEFAULT_VOICE, output=None, speed=1.0, dry_run=False,
+                  stop_at=None, skip_exact=(), skip_prefixes=()):
+    stem = os.path.splitext(os.path.basename(pdf_path))[0]
+    stem = re.sub(r'[^\w\-. ]', '_', stem).strip()
+
+    if output is None:
+        output = f"{stem}.wav"
+
+    text_file = f"{stem}.txt"
+    if os.path.exists(text_file):
+        print(f"Using existing text file: {text_file}")
+        with open(text_file) as f:
+            text = f.read()
+    else:
+        print(f"Extracting text from: {pdf_path}")
+        text = extract_text_from_pdf(pdf_path, stop_at=stop_at,
+                                     skip_exact=skip_exact, skip_prefixes=skip_prefixes)
+        with open(text_file, "w") as f:
+            f.write(text)
+        print(f"Text saved to: {text_file}  ({len(text)} chars)")
+
+    if dry_run:
+        print(text)
+        return
+
+    text_to_wav(text, voice=voice, output_file=output, speed=speed)
+    validate_audio(output, text)
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Convert a PDF to a validated WAV file via Kokoro TTS.")
+    parser.add_argument("pdf", help="Path to the PDF file")
+    parser.add_argument("voice", nargs="?", default=DEFAULT_VOICE,
+                        help=f"Voice to use (default: {DEFAULT_VOICE}). Options: {', '.join(VOICES)}")
+    parser.add_argument("--output", "-o", help="Output WAV path (default: <pdf stem>.wav)")
+    parser.add_argument("--speed", "-s", type=float, default=1.0,
+                        help="Speech speed multiplier (default: 1.0)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Extract text only — no TTS, no audio")
+    args = parser.parse_args()
+
+    pdf_to_speech(
+        args.pdf,
+        voice=args.voice,
+        output=args.output,
+        speed=args.speed,
+        dry_run=args.dry_run,
+        stop_at="Corrections & Amplifications",
+        skip_prefixes=("Appeared in the",),
+    )
