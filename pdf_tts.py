@@ -3,6 +3,7 @@ import wave
 import os
 import re
 import struct
+import subprocess
 import time
 from collections import Counter
 
@@ -181,7 +182,7 @@ def validate_audio(wav_path, expected_text):
 
 # --- TTS ---
 
-def text_to_wav(text, voice=DEFAULT_VOICE, output_file="output.wav", speed=1.0):
+def text_to_wav(text, voice=DEFAULT_VOICE, output_file="output.mp3", speed=1.0, fmt="mp3"):
     from kokoro import KPipeline
 
     print(f"Loading Kokoro (voice={voice})...")
@@ -207,11 +208,16 @@ def text_to_wav(text, voice=DEFAULT_VOICE, output_file="output.wav", speed=1.0):
     combined = np.concatenate(audio_chunks)
     pcm = (combined * 32767).astype(np.int16)
 
-    with wave.open(output_file, "wb") as f:
-        f.setnchannels(1)
-        f.setsampwidth(2)
-        f.setframerate(SAMPLE_RATE)
-        f.writeframes(pcm.tobytes())
+    if fmt == "mp3":
+        cmd = ["ffmpeg", "-y", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1",
+               "-i", "pipe:0", output_file]
+        subprocess.run(cmd, input=pcm.tobytes(), capture_output=True, check=True)
+    else:
+        with wave.open(output_file, "wb") as f:
+            f.setnchannels(1)
+            f.setsampwidth(2)
+            f.setframerate(SAMPLE_RATE)
+            f.writeframes(pcm.tobytes())
 
     total_elapsed = time.monotonic() - t0
     audio_dur = len(combined) / SAMPLE_RATE
@@ -219,12 +225,12 @@ def text_to_wav(text, voice=DEFAULT_VOICE, output_file="output.wav", speed=1.0):
 
 
 def pdf_to_speech(pdf_path, voice=DEFAULT_VOICE, output=None, speed=1.0, dry_run=False,
-                  stop_at=None, skip_exact=(), skip_prefixes=()):
+                  stop_at=None, skip_exact=(), skip_prefixes=(), fmt="mp3"):
     stem = os.path.splitext(os.path.basename(pdf_path))[0]
     stem = re.sub(r'[^\w\-. ]', '_', stem).strip()
 
     if output is None:
-        output = f"{stem}.wav"
+        output = f"{stem}.{fmt}"
 
     text_file = f"{stem}.txt"
     if os.path.exists(text_file):
@@ -243,17 +249,19 @@ def pdf_to_speech(pdf_path, voice=DEFAULT_VOICE, output=None, speed=1.0, dry_run
         print(text)
         return
 
-    text_to_wav(text, voice=voice, output_file=output, speed=speed)
+    text_to_wav(text, voice=voice, output_file=output, speed=speed, fmt=fmt)
     validate_audio(output, text)
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Convert a PDF to a validated WAV file via Kokoro TTS.")
+    parser = argparse.ArgumentParser(description="Convert a PDF to a speech audio file via Kokoro TTS.")
     parser.add_argument("pdf", help="Path to the PDF file")
     parser.add_argument("voice", nargs="?", default=DEFAULT_VOICE,
                         help=f"Voice to use (default: {DEFAULT_VOICE}). Options: {', '.join(VOICES)}")
-    parser.add_argument("--output", "-o", help="Output WAV path (default: <pdf stem>.wav)")
+    parser.add_argument("--output", "-o", help="Output audio path (default: <pdf stem>.<format>)")
+    parser.add_argument("--format", "-f", choices=["wav", "mp3"], default="mp3",
+                        help="Output format (default: mp3)")
     parser.add_argument("--speed", "-s", type=float, default=1.0,
                         help="Speech speed multiplier (default: 1.0)")
     parser.add_argument("--dry-run", action="store_true",
@@ -266,6 +274,7 @@ if __name__ == "__main__":
         output=args.output,
         speed=args.speed,
         dry_run=args.dry_run,
+        fmt=args.format,
         stop_at="Corrections & Amplifications",
         skip_prefixes=("Appeared in the",),
     )
