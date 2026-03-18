@@ -3,14 +3,14 @@
 Turn any PDF — article, memo, report — into a high-quality audio file you actually want to listen to. One command, one output, no API keys.
 
 ```
-uv run pdf_tts.py "article.pdf"  →  article.wav
+uv run pdf_tts.py "article.pdf"  →  article.mp3
 ```
 
 ## How it works
 
 1. **Extract** — PyMuPDF reads the PDF and classifies spans by font size relative to the body. Titles, section headers, bylines, and body text are each handled to preserve the document's natural rhythm. Short artifacts and footnote-sized spans are discarded.
 2. **Synthesize** — [Kokoro](https://github.com/hexgrad/kokoro) generates audio locally at 5–6x real-time. No cloud API, no per-character charges.
-3. **Validate** — Whisper transcribes the output WAV and runs a word-level diff against the source text. The similarity score prints after every run so you can catch regressions.
+3. **Validate** — Whisper transcribes the output audio and runs a word-level diff against the source text. The similarity score prints after every run so you can catch regressions.
 
 ## Performance
 
@@ -55,8 +55,11 @@ uv run pdf_tts.py "article.pdf" --speed 1.2
 # Preview extracted text without generating audio
 uv run pdf_tts.py "article.pdf" --dry-run
 
+# Output as WAV instead of MP3
+uv run pdf_tts.py "article.pdf" --format wav
+
 # Specify output path
-uv run pdf_tts.py "article.pdf" --output listen.wav
+uv run pdf_tts.py "article.pdf" --output listen.mp3
 ```
 
 ## Voices
