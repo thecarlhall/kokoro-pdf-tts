@@ -182,7 +182,7 @@ def validate_audio(wav_path, expected_text):
 
 # --- TTS ---
 
-def text_to_wav(text, voice=DEFAULT_VOICE, output_file="output.mp3", speed=1.0, fmt="mp3"):
+def text_to_audio(text, voice=DEFAULT_VOICE, output_file="output.mp3", speed=1.0, fmt="mp3"):
     from kokoro import KPipeline
 
     print(f"Loading Kokoro (voice={voice})...")
@@ -224,9 +224,9 @@ def text_to_wav(text, voice=DEFAULT_VOICE, output_file="output.mp3", speed=1.0, 
     print(f"Done: {output_file}  ({audio_dur:.1f}s audio in {total_elapsed:.1f}s — {audio_dur/total_elapsed:.1f}x real-time)")
 
 
-def pdf_to_speech(pdf_path, voice=DEFAULT_VOICE, output=None, speed=1.0, dry_run=False,
+def file_to_speech(file_path, voice=DEFAULT_VOICE, output=None, speed=1.0, dry_run=False,
                   stop_at=None, skip_exact=(), skip_prefixes=(), fmt="mp3"):
-    stem = os.path.splitext(os.path.basename(pdf_path))[0]
+    stem = os.path.splitext(os.path.basename(file_path))[0]
     stem = re.sub(r'[^\w\-. ]', '_', stem).strip()
 
     if output is None:
@@ -238,8 +238,8 @@ def pdf_to_speech(pdf_path, voice=DEFAULT_VOICE, output=None, speed=1.0, dry_run
         with open(text_file) as f:
             text = f.read()
     else:
-        print(f"Extracting text from: {pdf_path}")
-        text = extract_text_from_pdf(pdf_path, stop_at=stop_at,
+        print(f"Extracting text from: {file_path}")
+        text = extract_text_from_pdf(file_path, stop_at=stop_at,
                                      skip_exact=skip_exact, skip_prefixes=skip_prefixes)
         with open(text_file, "w") as f:
             f.write(text)
@@ -249,14 +249,14 @@ def pdf_to_speech(pdf_path, voice=DEFAULT_VOICE, output=None, speed=1.0, dry_run
         print(text)
         return
 
-    text_to_wav(text, voice=voice, output_file=output, speed=speed, fmt=fmt)
+    text_to_audio(text, voice=voice, output_file=output, speed=speed, fmt=fmt)
     validate_audio(output, text)
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Convert a PDF to a speech audio file via Kokoro TTS.")
-    parser.add_argument("pdf", help="Path to the PDF file")
+    parser = argparse.ArgumentParser(description="Convert a file (pdf or txt) to a speech audio file via Kokoro TTS.")
+    parser.add_argument("file", help="Path to the file")
     parser.add_argument("voice", nargs="?", default=DEFAULT_VOICE,
                         help=f"Voice to use (default: {DEFAULT_VOICE}). Options: {', '.join(VOICES)}")
     parser.add_argument("--output", "-o", help="Output audio path (default: <pdf stem>.<format>)")
@@ -269,7 +269,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     pdf_to_speech(
-        args.pdf,
+        args.file,
         voice=args.voice,
         output=args.output,
         speed=args.speed,
