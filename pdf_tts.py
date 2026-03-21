@@ -171,16 +171,12 @@ TEXT TO CLEAN:
 
 
 def clean_text_with_claude(text, model="claude-haiku-4-5-20251001"):
-    import anthropic
-
     print("Cleaning extracted text with Claude...")
-    client = anthropic.Anthropic()
-    message = client.messages.create(
-        model=model,
-        max_tokens=8096,
-        messages=[{"role": "user", "content": CLEAN_PROMPT + text}],
+    result = subprocess.run(
+        ["claude", "-p", "--model", model, CLEAN_PROMPT + text],
+        capture_output=True, text=True, check=True,
     )
-    cleaned = message.content[0].text
+    cleaned = result.stdout.strip()
     print(f"  Claude cleaned: {len(text)} → {len(cleaned)} chars "
           f"(removed {len(text) - len(cleaned)})")
     return cleaned
@@ -314,7 +310,7 @@ if __name__ == "__main__":
                         help="Extract text only — no TTS, no audio")
     args = parser.parse_args()
 
-    pdf_to_speech(
+    file_to_speech(
         args.file,
         voice=args.voice,
         output=args.output,
