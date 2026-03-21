@@ -148,23 +148,35 @@ def extract_text_from_pdf(pdf_path, stop_at=None, skip_exact=(), skip_prefixes=(
 # --- Claude text cleaning ---
 
 CLEAN_PROMPT = """\
-You are cleaning text that was extracted from a PDF for text-to-speech conversion.
-The extraction process sometimes leaves artifacts that would sound wrong or jarring when read aloud.
+You are preparing text extracted from a PDF for text-to-speech playback via Kokoro TTS.
+Your job is to clean up extraction artifacts AND lightly tidy the layout so the spoken \
+result flows naturally and logically.
 
-Clean the text by:
-- Removing standalone page numbers (e.g. a line that is just "42" or "Page 12")
-- Removing inline footnote/endnote reference numbers embedded mid-sentence (e.g. "the study found1 that" → "the study found that")
-- Removing figure and table labels that appear as orphaned fragments (e.g. "Figure 3." or "Table 1:" on their own)
-- Removing header/footer repetition artifacts (repeated titles, running heads, URLs, DOIs)
-- Removing isolated single characters or meaningless short tokens left by layout parsing
-- Fixing any words that were split across lines and joined with a hyphen mid-word (e.g. "impor-tant" → "important")
+CLEANUP — remove or fix:
+- Standalone page numbers (a line that is just "42" or "Page 12")
+- Inline footnote/endnote reference numbers mid-sentence (e.g. "the study found1 that" → "the study found that")
+- Orphaned figure/table labels (e.g. "Figure 3." or "Table 1:" on their own line)
+- Header/footer repetition artifacts (repeated titles, running heads, URLs, DOIs)
+- Isolated single characters or meaningless short tokens left by layout parsing
+- Mid-word hyphens from line-break splits (e.g. "impor-tant" → "important")
+
+LAYOUT TIDYING — adjust so Kokoro reads it naturally:
+- If a section heading is immediately followed by body text with no separation, ensure there \
+is a blank line between them so Kokoro pauses at the heading.
+- If bullet points or list items were flattened into one run-on line, split them onto separate \
+lines so each item is read as a distinct unit.
+- If a pull-quote or callout box has been interleaved mid-paragraph (a common PDF extraction \
+artifact), move it to its own paragraph after the surrounding body text.
+- If the logical order of content seems disrupted by column or sidebar extraction, reorder to \
+the most natural reading sequence.
 
 Do NOT:
 - Change any actual sentence content, wording, or meaning
 - Remove numbers that are part of sentences (e.g. "over 3 million people")
-- Add, rewrite, or summarise anything
+- Add, rewrite, summarise, or paraphrase anything
+- Add spoken stage directions or meta-commentary
 
-Return only the cleaned text with no commentary or explanation.
+Return only the cleaned, tidied text with no commentary or explanation.
 
 TEXT TO CLEAN:
 """
@@ -310,6 +322,7 @@ if __name__ == "__main__":
                         help="Extract text only — no TTS, no audio")
     args = parser.parse_args()
 
+    t_start = time.monotonic()
     file_to_speech(
         args.file,
         voice=args.voice,
@@ -320,3 +333,5 @@ if __name__ == "__main__":
         stop_at="Corrections & Amplifications",
         skip_prefixes=("Appeared in the",),
     )
+    elapsed = time.monotonic() - t_start
+    print(f"\nTotal time: {elapsed:.1f}s")
