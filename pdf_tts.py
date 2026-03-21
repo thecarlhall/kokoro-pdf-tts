@@ -145,6 +145,47 @@ def extract_text_from_pdf(pdf_path, stop_at=None, skip_exact=(), skip_prefixes=(
     return re.sub(r'\n{3,}', '\n\n', "\n".join(output_lines)).strip()
 
 
+# --- Claude text cleaning ---
+
+CLEAN_PROMPT = """\
+You are cleaning text that was extracted from a PDF for text-to-speech conversion.
+The extraction process sometimes leaves artifacts that would sound wrong or jarring when read aloud.
+
+Clean the text by:
+- Removing standalone page numbers (e.g. a line that is just "42" or "Page 12")
+- Removing inline footnote/endnote reference numbers embedded mid-sentence (e.g. "the study found1 that" → "the study found that")
+- Removing figure and table labels that appear as orphaned fragments (e.g. "Figure 3." or "Table 1:" on their own)
+- Removing header/footer repetition artifacts (repeated titles, running heads, URLs, DOIs)
+- Removing isolated single characters or meaningless short tokens left by layout parsing
+- Fixing any words that were split across lines and joined with a hyphen mid-word (e.g. "impor-tant" → "important")
+
+Do NOT:
+- Change any actual sentence content, wording, or meaning
+- Remove numbers that are part of sentences (e.g. "over 3 million people")
+- Add, rewrite, or summarise anything
+
+Return only the cleaned text with no commentary or explanation.
+
+TEXT TO CLEAN:
+"""
+
+
+def clean_text_with_claude(text, model="claude-haiku-4-5-20251001"):
+    import anthropic
+
+    print("Cleaning extracted text with Claude...")
+    client = anthropic.Anthropic()
+    message = client.messages.create(
+        model=model,
+        max_tokens=8096,
+        messages=[{"role": "user", "content": CLEAN_PROMPT + text}],
+    )
+    cleaned = message.content[0].text
+    print(f"  Claude cleaned: {len(text)} → {len(cleaned)} chars "
+          f"(removed {len(text) - len(cleaned)})")
+    return cleaned
+
+
 # --- Validation ---
 
 def _normalise_for_diff(text):
@@ -232,18 +273,23 @@ def file_to_speech(file_path, voice=DEFAULT_VOICE, output=None, speed=1.0, dry_r
     if output is None:
         output = f"{stem}.{fmt}"
 
-    text_file = f"{stem}.txt"
-    if os.path.exists(text_file):
-        print(f"Using existing text file: {text_file}")
-        with open(text_file) as f:
+    raw_file = f"{stem}.txt"
+    clean_file = f"{stem}-clean.txt"
+    if os.path.exists(clean_file):
+        print(f"Using existing cleaned text file: {clean_file}")
+        with open(clean_file) as f:
             text = f.read()
     else:
         print(f"Extracting text from: {file_path}")
-        text = extract_text_from_pdf(file_path, stop_at=stop_at,
-                                     skip_exact=skip_exact, skip_prefixes=skip_prefixes)
-        with open(text_file, "w") as f:
+        raw_text = extract_text_from_pdf(file_path, stop_at=stop_at,
+                                         skip_exact=skip_exact, skip_prefixes=skip_prefixes)
+        with open(raw_file, "w") as f:
+            f.write(raw_text)
+        print(f"Raw text saved to: {raw_file}  ({len(raw_text)} chars)")
+        text = clean_text_with_claude(raw_text)
+        with open(clean_file, "w") as f:
             f.write(text)
-        print(f"Text saved to: {text_file}  ({len(text)} chars)")
+        print(f"Cleaned text saved to: {clean_file}  ({len(text)} chars)")
 
     if dry_run:
         print(text)
