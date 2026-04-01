@@ -3,6 +3,8 @@ __pycache__/
 *.pdf
 *.txt
 *.wav
+*.mp3
 
 tags
 audio/
+output/
