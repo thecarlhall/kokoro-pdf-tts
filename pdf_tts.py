@@ -278,11 +278,13 @@ def file_to_speech(file_path, voice=DEFAULT_VOICE, output=None, speed=1.0, dry_r
     stem = os.path.splitext(os.path.basename(file_path))[0]
     stem = re.sub(r'[^\w\-. ]', '_', stem).strip()
 
-    if output is None:
-        output = f"{stem}.{fmt}"
+    os.makedirs("output", exist_ok=True)
 
-    raw_file = f"{stem}.txt"
-    clean_file = f"{stem}-clean.txt"
+    if output is None:
+        output = os.path.join("output", f"{stem}.{fmt}")
+
+    raw_file = os.path.join("output", f"{stem}.txt")
+    clean_file = os.path.join("output", f"{stem}-clean.txt")
     if os.path.exists(clean_file):
         print(f"Using existing cleaned text file: {clean_file}")
         with open(clean_file) as f:
